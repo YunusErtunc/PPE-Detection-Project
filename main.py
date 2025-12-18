@@ -54,15 +54,13 @@ colors = {
     'NO-Safety Boot': (0, 0, 255)
 }
 
-# --- GLOBAL DEĞİŞKENLER (Spam Engellemek İçin) ---
-# Son kayıt zamanını tutar ki saniyede 50 tane veritabanına yazmasın
-if 'last_log_time' not in st.session_state:
-    st.session_state.last_log_time = 0
-
-# --- GÖRÜNTÜ İŞLEME SINIFI ---
+# --- GÖRÜNTÜ İŞLEME VE MANTIK SINIFI ---
 class VideoProcessor(VideoProcessorBase):
     def __init__(self):
-        self.last_save_time = 0  # Her işlemci için ayrı zamanlayıcı
+        # Zamanlayıcı değişkenleri
+        self.violation_start_time = None  # İhlalin başladığı an
+        self.violation_logged = False     # Bu ihlal zaten kaydedildi mi?
+        self.current_violation_label = "" # O anki ihlalin adı
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -72,8 +70,8 @@ class VideoProcessor(VideoProcessorBase):
         if model_bot:
             results_list.append(model_bot(img, conf=0.50, verbose=False))
 
-        violation_detected = False
-        violation_label = ""
+        violation_detected_in_frame = False
+        detected_label = ""
 
         # 2. Çizim ve Kontrol
         for results in results_list:
@@ -83,42 +81,69 @@ class VideoProcessor(VideoProcessorBase):
                     cls = int(box.cls[0])
                     label = r.names[cls] if r.names and cls in r.names else "Unknown"
                     
-                    # Eğer "NO-" ile başlıyorsa ihlaldir (NO-Hardhat, NO-Vest vb.)
-                    if label.startswith("NO-"):
-                        violation_detected = True
-                        violation_label = label
+                    # Eğer "NO-" ile başlıyorsa ihlaldir
+                    if label.startswith("NO-") or "Maks_Takmiyor" in label:
+                        violation_detected_in_frame = True
+                        detected_label = label
 
                     color = colors.get(label, (255, 0, 255))
                     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        # 3. Veritabanına Kayıt (Spam Korumalı - 3 saniyede 1 kayıt)
-        current_time = time.time()
-        if violation_detected and (current_time - self.last_save_time > 3):
-            self.last_save_time = current_time
+        # --- 3. 5 SANİYE KURALI MANTIĞI ---
+        if violation_detected_in_frame:
+            # a) Kronometre henüz başlamadıysa başlat
+            if self.violation_start_time is None:
+                self.violation_start_time = time.time()
+                self.violation_logged = False # Yeni bir ihlal başlıyor
+                self.current_violation_label = detected_label
             
-            # Resmi Byte'a çevirip kaydetme işlemi
-            # Not: Bu işlem thread içinde olduğu için try-catch bloğuna alıyoruz
-            try:
-                # BGR'dan RGB'ye çevir (Kaydederken renkler bozulmasın)
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(img_rgb)
-                stream = io.BytesIO()
-                pil_img.save(stream, format='JPEG')
-                img_byte = stream.getvalue()
-                
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                
-                # Yeni bir bağlantı aç (Thread safe olması için)
-                local_conn = sqlite3.connect(DB_PATH)
-                local_c = local_conn.cursor()
-                local_c.execute("INSERT INTO violations (timestamp, violation_type, image) VALUES (?, ?, ?)",
-                                (timestamp, violation_label, img_byte))
-                local_conn.commit()
-                local_conn.close()
-                print(f"İHLAL KAYDEDİLDİ: {violation_label}") # Terminalde görmek için
-            except Exception as e:
-                print(f"Kayıt Hatası: {e}")
+            # b) Geçen süreyi hesapla
+            elapsed_time = time.time() - self.violation_start_time
+            remaining_time = 5 - elapsed_time
+
+            if elapsed_time < 5:
+                # Ekrana geri sayım yaz (Sarı renk)
+                text = f"DIKKAT! Ihlal Kaydediliyor: {int(remaining_time)+1}"
+                cv2.putText(img, text, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3)
+            
+            else:
+                # c) Süre doldu! Kaydetme zamanı
+                if not self.violation_logged:
+                    # Ekrana "KAYDEDİLDİ" yaz (Kırmızı renk)
+                    cv2.putText(img, "VERITABANINA KAYDEDILDI!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                    
+                    # Veritabanına Yaz
+                    try:
+                        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        pil_img = Image.fromarray(img_rgb)
+                        stream = io.BytesIO()
+                        pil_img.save(stream, format='JPEG')
+                        img_byte = stream.getvalue()
+                        
+                        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        local_conn = sqlite3.connect(DB_PATH)
+                        local_c = local_conn.cursor()
+                        local_c.execute("INSERT INTO violations (timestamp, violation_type, image) VALUES (?, ?, ?)",
+                                        (timestamp, self.current_violation_label, img_byte))
+                        local_conn.commit()
+                        local_conn.close()
+                        
+                        print(f"🚨 KAYIT BAŞARILI: {self.current_violation_label}")
+                        self.violation_logged = True # Tekrar tekrar kaydetmeyi engelle
+                    except Exception as e:
+                        print(f"Kayıt Hatası: {e}")
+                else:
+                    # Zaten kaydedildiyse sadece ekranda uyarısı kalsın
+                    cv2.putText(img, "IHLAL DEVAM EDIYOR (KAYITLI)", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+        else:
+            # İhlal yoksa (veya kişi baretini taktıysa) sayacı sıfırla
+            if self.violation_start_time is not None:
+                print("İhlal sona erdi, sayaç sıfırlandı.")
+            self.violation_start_time = None
+            self.violation_logged = False
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -129,7 +154,7 @@ mod = st.sidebar.radio("Giriş Modu Seçin:", ["🎥 Saha Kamerası", "👷 Şef
 # --- MOD 1: SAHA KAMERASI ---
 if mod == "🎥 Saha Kamerası":
     st.title("🎥 Saha Denetim Modu")
-    st.write("Kamera başlatıldığında ihlaller otomatik olarak şef ekranına düşer.")
+    st.write("Kamera, 5 saniye boyunca kesintisiz ihlal tespit ederse Şef Paneline düşer.")
     
     rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
     
@@ -168,8 +193,11 @@ elif mod == "👷 Şef Paneli (Admin)":
                 
                 with col1:
                     # Resmi Veritabanından Çöz
-                    image = Image.open(io.BytesIO(img_data))
-                    st.image(image, caption="Kanıt Fotoğrafı", use_container_width=True)
+                    try:
+                        image = Image.open(io.BytesIO(img_data))
+                        st.image(image, caption="Kanıt Fotoğrafı", use_container_width=True)
+                    except:
+                        st.error("Resim yüklenemedi")
                 
                 with col2:
                     st.error(f"🚨 İHLAL TESPİT EDİLDİ: {v_type}")
