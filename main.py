@@ -156,7 +156,7 @@ if mod == "🎥 Saha Kamerası":
     st.title("🎥 Saha Denetim Modu")
     st.write("Kamera, 5 saniye boyunca kesintisiz ihlal tespit ederse Şef Paneline düşer.")
     
-    # --- BURASI DÜZELTİLDİ: STUN SUNUCUSU AYARI ---
+    # STUN Sunucusu Ayarları (Bağlantı Sorunu İçin)
     rtc_configuration = RTCConfiguration(
         {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
     )
@@ -164,38 +164,51 @@ if mod == "🎥 Saha Kamerası":
     webrtc_streamer(
         key="isg-camera",
         mode=WebRtcMode.SENDRECV,
-        rtc_configuration=rtc_configuration, # Ayar buraya eklendi
+        rtc_configuration=rtc_configuration,
         video_processor_factory=VideoProcessor,
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
     )
 
-# --- MOD 2: ŞEF PANELİ ---
+# --- MOD 2: ŞEF PANELİ (GÜNCELLENEN KISIM) ---
 elif mod == "👷 Şef Paneli (Admin)":
     st.title("👷 Şef Denetim Paneli")
     st.write("Sahadan gelen ihlal bildirimleri aşağıda listelenir.")
     
-    # Yenileme Butonu
-    if st.button("🔄 Listeyi Yenile"):
-        st.rerun()
+    # Üst Butonlar (Yenile ve Tümünü Sil)
+    col_refresh, col_delete_all = st.columns([1, 4])
+    
+    with col_refresh:
+        if st.button("🔄 Listeyi Yenile"):
+            st.rerun()
+            
+    with col_delete_all:
+        # Kırmızı renkli, dikkat çekici silme butonu
+        if st.button("🗑️ TÜM KAYITLARI TEMİZLE", type="primary"):
+            c = conn.cursor()
+            c.execute("DELETE FROM violations") # Tabloyu boşaltır
+            conn.commit()
+            st.success("Tüm veritabanı temizlendi!")
+            time.sleep(1) # Kullanıcının mesajı görmesi için bekle
+            st.rerun()
 
-    # Verileri Çek
+    # Verileri Çek (ID ile birlikte)
     c = conn.cursor()
-    c.execute("SELECT timestamp, violation_type, image FROM violations ORDER BY id DESC")
+    c.execute("SELECT id, timestamp, violation_type, image FROM violations ORDER BY id DESC")
     rows = c.fetchall()
 
     if not rows:
         st.info("Henüz bir ihlal kaydı yok. Saha güvenli görünüyor! ✅")
     else:
         for row in rows:
-            ts, v_type, img_data = row
+            record_id, ts, v_type, img_data = row
             
-            # Kart Görünümü
-            with st.container():
+            # Her kayıt için bir kutu (container) oluştur
+            with st.container(border=True): 
                 col1, col2 = st.columns([1, 3])
                 
                 with col1:
-                    # Resmi Veritabanından Çöz
+                    # Resmi Göster
                     try:
                         image = Image.open(io.BytesIO(img_data))
                         st.image(image, caption="Kanıt Fotoğrafı", use_container_width=True)
@@ -205,4 +218,12 @@ elif mod == "👷 Şef Paneli (Admin)":
                 with col2:
                     st.error(f"🚨 İHLAL TESPİT EDİLDİ: {v_type}")
                     st.write(f"🕒 **Zaman:** {ts}")
-                    st.write("---")
+                    
+                    # Tekil Silme Butonu
+                    # key=... kısmı çok önemli, her butona özel kimlik verir
+                    if st.button(f"🗑️ Bu Kaydı Sil", key=f"del_{record_id}"):
+                        c.execute("DELETE FROM violations WHERE id=?", (record_id,))
+                        conn.commit()
+                        st.warning("Kayıt silindi.")
+                        time.sleep(0.5)
+                        st.rerun()
