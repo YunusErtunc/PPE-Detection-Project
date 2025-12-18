@@ -1,0 +1,10 @@
+# C:/ISGProje/yeni_veri/data.yaml
+
+# valid ve test klasörleri olmadığı için hepsine 'train' yolunu veriyoruz
+train: C:/ISGProje/yeni_veri/train/images
+val: C:/ISGProje/yeni_veri/train/images
+test: C:/ISGProje/yeni_veri/train/images
+
+# Sınıf sayısı ve isimleri
+nc: 2
+names: ['safety boot', 'worker']
