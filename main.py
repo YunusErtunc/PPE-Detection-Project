@@ -156,12 +156,15 @@ if mod == "🎥 Saha Kamerası":
     st.title("🎥 Saha Denetim Modu")
     st.write("Kamera, 5 saniye boyunca kesintisiz ihlal tespit ederse Şef Paneline düşer.")
     
-    rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+    # --- BURASI DÜZELTİLDİ: STUN SUNUCUSU AYARI ---
+    rtc_configuration = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
     
     webrtc_streamer(
         key="isg-camera",
         mode=WebRtcMode.SENDRECV,
-        rtc_configuration=rtc_configuration,
+        rtc_configuration=rtc_configuration, # Ayar buraya eklendi
         video_processor_factory=VideoProcessor,
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
