@@ -10,6 +10,7 @@ import datetime
 import time
 from PIL import Image
 import io
+import shutil  # <--- YENİ EKLENDİ: Klasör silmek için gerekli kütüphane
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="İSG Takip Sistemi", page_icon="🏗️", layout="wide")
@@ -184,42 +185,49 @@ elif mod == "👷 Şef Paneli (Admin)":
             st.rerun()
             
     with col_delete_all:
-        # --- GÜNCELLENEN KISIM: FABRİKA AYARLARINA DÖNME ---
-        if st.button("🗑️ TÜM KAYITLARI TEMİZLE (FABRİKA AYARLARI)", type="primary"):
+        # --- GÜNCELLENEN KISIM: FABRİKA AYARLARINA DÖNME (HEM DB HEM KLASÖR) ---
+        if st.button("🗑️ SİSTEMİ TAMAMEN SIFIRLA (DB + FOTOLAR)", type="primary"):
             try:
+                # 1. Veritabanını Sil (Tabloyu Drop Et)
                 c = conn.cursor()
-                # 1. Tabloyu tamamen sil (DROP)
                 c.execute("DROP TABLE IF EXISTS violations")
                 conn.commit()
                 
-                # 2. Tabloyu sıfırdan tekrar oluştur (ID'ler 1'e döner)
+                # 2. YOLO'nun oluşturduğu 'runs' klasörünü sil
+                if os.path.exists("runs"):
+                    shutil.rmtree("runs") # Klasörü içindekilerle birlikte siler
+                    st.toast("YOLO 'runs' klasörü silindi.", icon="🗑️")
+                
+                # 3. Eğer varsa eski 'yeni_veri' klasörünü sil
+                if os.path.exists("yeni_veri"):
+                    shutil.rmtree("yeni_veri")
+                    st.toast("'yeni_veri' klasörü silindi.", icon="🗑️")
+
+                # 4. Tabloyu sıfırdan tekrar oluştur
                 init_db()
                 
-                st.success("Veritabanı ve fotoğraflar tamamen sıfırlandı! ID'ler 1'den başlayacak.")
-                time.sleep(1.5) # Mesajın okunması için bekle
+                st.success("Sistem tamamen fabrika ayarlarına döndü! Tüm fotolar silindi.")
+                time.sleep(2) 
                 st.rerun()
             except Exception as e:
                 st.error(f"Sıfırlama sırasında hata oluştu: {e}")
 
-    # Verileri Çek (ID ile birlikte)
-    # Hata önleyici: Eğer tablo silindiyse ve henüz oluşmadıysa hata vermemesi için try-except
+    # Verileri Çek
     try:
         c = conn.cursor()
         c.execute("SELECT id, timestamp, violation_type, image FROM violations ORDER BY id DESC")
         rows = c.fetchall()
 
         if not rows:
-            st.info("Henüz bir ihlal kaydı yok. Saha güvenli görünüyor! ✅")
+            st.info("Henüz bir ihlal kaydı yok. Sistem tertemiz! ✅")
         else:
             for row in rows:
                 record_id, ts, v_type, img_data = row
                 
-                # Her kayıt için bir kutu (container) oluştur
                 with st.container(border=True): 
                     col1, col2 = st.columns([1, 3])
                     
                     with col1:
-                        # Resmi Göster
                         try:
                             image = Image.open(io.BytesIO(img_data))
                             st.image(image, caption=f"ID: {record_id}", use_container_width=True)
@@ -231,7 +239,6 @@ elif mod == "👷 Şef Paneli (Admin)":
                         st.write(f"🕒 **Zaman:** {ts}")
                         st.write(f"🆔 **Kayıt No:** {record_id}")
                         
-                        # Tekil Silme Butonu
                         if st.button(f"🗑️ Bu Kaydı Sil", key=f"del_{record_id}"):
                             c.execute("DELETE FROM violations WHERE id=?", (record_id,))
                             conn.commit()
@@ -239,5 +246,4 @@ elif mod == "👷 Şef Paneli (Admin)":
                             time.sleep(0.5)
                             st.rerun()
     except sqlite3.OperationalError:
-        # Tablo yoksa (ilk açılışta veya silme sonrası anlık durum)
         st.info("Veritabanı hazırlanıyor...")
