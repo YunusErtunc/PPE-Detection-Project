@@ -18,7 +18,7 @@ st.set_page_config(page_title="İSG Takip Sistemi", page_icon="🏗️", layout=
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_BARET_PATH = os.path.join(BASE_DIR, "models", "best.pt")
 MODEL_BOT_PATH = os.path.join(BASE_DIR, "models", "bot.pt")
-DB_PATH = os.path.join(BASE_DIR, "isg_database.db") # Eski, standart isme döndük
+DB_PATH = os.path.join(BASE_DIR, "isg_database.db")
 
 # --- VERİTABANI BAĞLANTISI ---
 def init_db():
@@ -32,7 +32,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Dosya yoksa oluştur
 if not os.path.exists(DB_PATH):
     init_db()
 
@@ -52,18 +51,20 @@ def load_models():
 
 model_baret, model_bot = load_models()
 
-# --- RENKLER ---
+# --- RENKLER (GÜNCELLENDİ: ELDİVEN EKLENDİ) ---
 colors = {
-    'Hardhat': (0, 255, 0),       # Yeşil
-    'Vest': (0, 255, 0),          # Yeşil
-    'safety boot': (0, 255, 0),   # Yeşil
-    'worker': (255, 191, 0),      # Turuncu
-    'NO-Hardhat': (0, 0, 255),    # Kırmızı
-    'NO-Vest': (0, 0, 255),       # Kırmızı
-    'NO-Safety Boot': (0, 0, 255) # Kırmızı
+    'Hardhat': (0, 255, 0),       # Yeşil (Baret Var)
+    'Vest': (0, 255, 0),          # Yeşil (Yelek Var)
+    'Gloves': (0, 255, 0),        # Yeşil (Eldiven Var - YENİ)
+    'safety boot': (0, 255, 0),   # Yeşil (Bot Var)
+    'worker': (255, 191, 0),      # Turuncu (İşçi)
+    'NO-Hardhat': (0, 0, 255),    # Kırmızı (Baret Yok)
+    'NO-Vest': (0, 0, 255),       # Kırmızı (Yelek Yok)
+    'NO-Gloves': (0, 0, 255),     # Kırmızı (Eldiven Yok - YENİ)
+    'NO-Safety Boot': (0, 0, 255) # Kırmızı (Bot Yok)
 }
 
-# --- GÖRÜNTÜ İŞLEME SINIFI (EN ÖNEMLİ KISIM) ---
+# --- GÖRÜNTÜ İŞLEME SINIFI ---
 class VideoProcessor(VideoProcessorBase):
     def __init__(self):
         self.violation_start_time = None
@@ -73,7 +74,6 @@ class VideoProcessor(VideoProcessorBase):
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # Modeller yüklü değilse görüntüyü boş döndürme, aynen ver
         if model_baret is None:
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -86,34 +86,32 @@ class VideoProcessor(VideoProcessorBase):
         violation_detected_in_frame = False
         detected_label = ""
 
-        # 2. Kutucukları Çiz (Loop)
+        # 2. Kutucukları Çiz
         for results in results_list:
             for r in results:
                 for box in r.boxes:
-                    # Koordinatları al
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     cls = int(box.cls[0])
-                    
-                    # Etiketi bul
                     label = r.names[cls] if r.names and cls in r.names else "Unknown"
                     
-                    # İhlal Kontrolü
-                    if label.startswith("NO-") or "Maks_Takmiyor" in label:
+                    # --- GÜNCELLENEN MANTIK: MASKE ÇIKTI, ELDİVEN GİRDİ ---
+                    # Eğer "NO-" ile başlıyorsa (NO-Gloves, NO-Hardhat vb.) ihlaldir.
+                    if label.startswith("NO-"): 
                         violation_detected_in_frame = True
                         detected_label = label
 
                     # Rengi seç
-                    color = colors.get(label, (255, 0, 255))
+                    color = colors.get(label, (255, 0, 255)) # Bilinmeyenler mor
                     
-                    # ÇİZİM KOMUTLARI (Bunlar olmazsa kutu görünmez)
+                    # ÇİZİM
                     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
                     
-                    # Etiket Zemin ve Yazı
+                    # Etiket
                     (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                     cv2.rectangle(img, (x1, y1 - 20), (x1 + w, y1), color, -1)
                     cv2.putText(img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # 3. İhlal Mantığı (5 Saniye Kuralı)
+        # 3. İhlal Kayıt Mantığı (5 Saniye Kuralı)
         if violation_detected_in_frame:
             if self.violation_start_time is None:
                 self.violation_start_time = time.time()
@@ -124,12 +122,11 @@ class VideoProcessor(VideoProcessorBase):
             
             if elapsed_time < 5:
                 remaining = 5 - elapsed_time
-                cv2.putText(img, f"IHLAL: {int(remaining)+1}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                cv2.putText(img, f"IHLAL TESPIT EDILIYOR: {int(remaining)+1}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
             else:
                 if not self.violation_logged:
                     cv2.putText(img, "KAYDEDILDI!", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     try:
-                        # Kayıt İşlemi
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         pil_img = Image.fromarray(img_rgb)
@@ -154,12 +151,13 @@ class VideoProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- ARAYÜZ (BASİT VE TEMİZ) ---
+# --- ARAYÜZ ---
 st.sidebar.title("Menü")
 page = st.sidebar.radio("Sayfa:", ["Kamera Modu", "Yönetici Paneli"])
 
 if page == "Kamera Modu":
     st.title("🎥 İSG Denetim Kamerası")
+    st.info("Eldiven, Baret ve Yelek kontrolü aktiftir.")
     
     rtc_configuration = RTCConfiguration(
         {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
@@ -176,7 +174,9 @@ if page == "Kamera Modu":
 
 elif page == "Yönetici Paneli":
     st.title("📋 Kayıtlı İhlaller")
-    if st.button("Yenile"):
+    
+    # Sayfa yenileme butonu
+    if st.button("🔄 Listeyi Yenile"):
         st.rerun()
         
     if os.path.exists(DB_PATH):
@@ -192,14 +192,36 @@ elif page == "Yönetici Paneli":
             else:
                 for row in rows:
                     r_id, r_ts, r_type, r_img = row
+                    
+                    # Her kayıt için bir kutu oluştur
                     with st.container(border=True):
                         c1, c2 = st.columns([1, 3])
+                        
+                        # Resim Sütunu
                         with c1:
                             try:
                                 st.image(Image.open(io.BytesIO(r_img)), use_container_width=True)
                             except: st.error("Görüntü hatası")
+                        
+                        # Bilgi ve Silme Butonu Sütunu
                         with c2:
-                            st.error(r_type)
-                            st.write(r_ts)
-        except:
-            st.error("Veritabanı okunurken hata oluştu.")
+                            st.error(f"🚨 {r_type}")
+                            st.write(f"📅 **Tarih:** {r_ts}")
+                            st.write(f"🆔 **Kayıt No:** {r_id}")
+                            
+                            # --- TEKLİ SİLME BUTONU ---
+                            # Her butona unique (eşsiz) bir key veriyoruz: f"delete_{r_id}"
+                            if st.button(f"🗑️ Bu Kaydı Sil", key=f"delete_{r_id}"):
+                                try:
+                                    del_conn = sqlite3.connect(DB_PATH)
+                                    del_c = del_conn.cursor()
+                                    del_c.execute("DELETE FROM violations WHERE id=?", (r_id,))
+                                    del_conn.commit()
+                                    del_conn.close()
+                                    st.success("Kayıt silindi! Sayfa yenileniyor...")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Silme hatası: {e}")
+        except Exception as e:
+            st.error(f"Veritabanı okunurken hata oluştu: {e}")
