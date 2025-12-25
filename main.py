@@ -20,7 +20,7 @@ MODEL_BARET_PATH = os.path.join(BASE_DIR, "models", "best.pt")
 MODEL_BOT_PATH = os.path.join(BASE_DIR, "models", "bot.pt")
 DB_PATH = os.path.join(BASE_DIR, "isg_database.db")
 
-# --- VERİTABANI KURULUMU ---
+# --- VERİTABANI OLUŞTURMA (SADECE OLUŞTURUR, SİLMEZ) ---
 def init_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     c = conn.cursor()
@@ -32,30 +32,28 @@ def init_db():
     conn.commit()
     conn.close()
 
+# Başlangıçta veritabanını kontrol et
 if not os.path.exists(DB_PATH):
     init_db()
 
 # --- MODELLERİ YÜKLE ---
 @st.cache_resource
 def load_models():
-    # Model dosyası var mı kontrol et
     if not os.path.exists(MODEL_BARET_PATH):
         st.error(f"Model bulunamadı: {MODEL_BARET_PATH}")
         return None, None
-    
-    # Modelleri yükle
     try:
         model_baret = YOLO(MODEL_BARET_PATH)
-        # Bot modeli opsiyonel, varsa yükle
+        # Bot modeli varsa yükle, yoksa None dön
         model_bot = YOLO(MODEL_BOT_PATH) if os.path.exists(MODEL_BOT_PATH) else None
         return model_baret, model_bot
     except Exception as e:
-        st.error(f"Model yüklenirken hata oluştu: {e}")
+        st.error(f"Model yükleme hatası: {e}")
         return None, None
 
 model_baret, model_bot = load_models()
 
-# --- RENKLER (GÖRSELLEŞTİRME İÇİN) ---
+# --- RENK TANIMLAMALARI ---
 colors = {
     'Hardhat': (0, 255, 0),       # Yeşil
     'Vest': (0, 255, 0),          # Yeşil
@@ -74,79 +72,85 @@ class VideoProcessor(VideoProcessorBase):
         self.current_violation_label = ""
 
     def recv(self, frame):
+        # 1. Görüntüyü al
         img = frame.to_ndarray(format="bgr24")
         
-        # Eğer modeller yüklenemediyse görüntüyü olduğu gibi döndür
+        # Model yüklenmediyse görüntüyü direkt geri ver (Hata vermesin)
         if model_baret is None:
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-        # 1. Baret Modelini Çalıştır
-        results_list = [model_baret(img, conf=0.45, verbose=False)]
-        
-        # 2. Bot Modeli Varsa Çalıştır
+        # 2. Tespit İşlemi
+        results_list = []
+        # Baret modeli tahmini
+        results_list.append(model_baret(img, conf=0.45, verbose=False))
+        # Bot modeli tahmini (varsa)
         if model_bot:
             results_list.append(model_bot(img, conf=0.50, verbose=False))
 
         violation_detected_in_frame = False
         detected_label = ""
 
-        # Sonuçları Çizdir (KUTUCUKLAR BURADA ÇİZİLİYOR)
+        # 3. Çizim İşlemi (Kritik Kısım)
         for results in results_list:
             for r in results:
+                # Her bir kutucuk (box) için dön
                 for box in r.boxes:
-                    # Koordinatları al
+                    # Koordinatları al (x1, y1, x2, y2)
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     
-                    # Sınıf ismini al
+                    # Sınıfı ve etiketi al
                     cls = int(box.cls[0])
                     label = r.names[cls] if r.names and cls in r.names else "Unknown"
                     
-                    # İhlal kontrolü
+                    # İhlal mi? (NO- ile başlayanlar veya Maks_Takmiyor)
                     if label.startswith("NO-") or "Maks_Takmiyor" in label:
                         violation_detected_in_frame = True
                         detected_label = label
 
-                    # Rengi belirle ve ÇİZ
-                    color = colors.get(label, (255, 0, 255)) # Bulamazsa mor yap
+                    # Rengi seç
+                    color = colors.get(label, (255, 0, 255)) # Tanımsızsa Mor yap
+                    
+                    # KUTUYU ÇİZ
                     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
                     
-                    # Yazıyı yaz
-                    text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                    cv2.rectangle(img, (x1, y1 - 20), (x1 + text_size[0], y1), color, -1)
-                    cv2.putText(img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                    # ETİKETİ YAZ
+                    # Yazının arkasına renkli zemin koy (okunabilirlik için)
+                    (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    cv2.rectangle(img, (x1, y1 - 20), (x1 + w, y1), color, -1)
+                    cv2.putText(img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # 5 Saniye Kuralı ve Kayıt Mantığı
+        # 4. İhlal Kayıt Mantığı (5 Saniye Kuralı)
         if violation_detected_in_frame:
+            # Sayaç başlat
             if self.violation_start_time is None:
                 self.violation_start_time = time.time()
                 self.violation_logged = False
                 self.current_violation_label = detected_label
             
+            # Geçen süreyi hesapla
             elapsed_time = time.time() - self.violation_start_time
             
             if elapsed_time < 5:
                 # Geri sayım
                 remaining = 5 - elapsed_time
-                cv2.putText(img, f"IHLAL TESPIT EDILDI: {int(remaining)+1}", (50, 50), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
+                cv2.putText(img, f"IHLAL TESPIT EDILIYOR: {int(remaining)+1}", (50, 50), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
             else:
-                # 5 saniye doldu
+                # Süre doldu, kaydet
                 if not self.violation_logged:
-                    cv2.putText(img, "KAYDEDILDI!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-                    
-                    # Veritabanına Kaydet
+                    cv2.putText(img, "VERITABANINA KAYDEDILDI!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     try:
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
-                        # Resmi byte formatına çevir
+                        # Resmi hazırla
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         pil_img = Image.fromarray(img_rgb)
                         stream = io.BytesIO()
                         pil_img.save(stream, format='JPEG')
                         img_byte = stream.getvalue()
                         
-                        # DB Bağlantısı
-                        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+                        # Veritabanına yaz
+                        conn = sqlite3.connect(DB_PATH)
                         c = conn.cursor()
                         c.execute("INSERT INTO violations (timestamp, violation_type, image) VALUES (?, ?, ?)",
                                   (timestamp, self.current_violation_label, img_byte))
@@ -155,9 +159,9 @@ class VideoProcessor(VideoProcessorBase):
                         
                         self.violation_logged = True
                     except Exception as e:
-                        print(f"Kayıt hatası: {e}")
+                        print(f"Kayıt Hatası: {e}")
                 else:
-                    cv2.putText(img, "KAYIT VERITABANINDA MEVCUT", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    cv2.putText(img, "KAYITLI IHLAL DEVAM EDIYOR", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         else:
             # İhlal yoksa sayacı sıfırla
             self.violation_start_time = None
@@ -165,20 +169,20 @@ class VideoProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- ARAYÜZ ---
-st.sidebar.title("🔧 Sistem Ayarları")
-mod = st.sidebar.radio("Mod Seç:", ["🎥 Saha Kamerası", "👷 Şef Paneli"])
+# --- ARAYÜZ KISMI ---
+st.sidebar.title("🔧 Menü")
+mod = st.sidebar.radio("Seçiniz:", ["🎥 Saha Kamerası", "👷 Yönetici Paneli"])
 
 if mod == "🎥 Saha Kamerası":
-    st.title("🎥 Saha Denetim Ekranı")
-    st.write("Sistem şu an aktif. İhlal durumunda kutucuklar kırmızı yanar.")
+    st.title("🎥 Canlı Denetim Ekranı")
+    st.info("Kamera açıldığında tespitler ve kutucuklar otomatik görünecektir.")
     
     rtc_configuration = RTCConfiguration(
         {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
     )
     
     webrtc_streamer(
-        key="isg-cam",
+        key="isg-stream",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=rtc_configuration,
         video_processor_factory=VideoProcessor,
@@ -186,50 +190,29 @@ if mod == "🎥 Saha Kamerası":
         async_processing=True,
     )
 
-elif mod == "👷 Şef Paneli":
-    st.title("👷 İhlal Kayıtları")
-    
-    if st.button("🔄 Yenile"):
+elif mod == "👷 Yönetici Paneli":
+    st.title("👷 Kayıtlı İhlaller")
+    if st.button("Yenile"):
         st.rerun()
         
-    # Basit Silme Butonu (Tek Tek Silme Özelliği ile)
     if os.path.exists(DB_PATH):
-        try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-            c = conn.cursor()
-            c.execute("SELECT id, timestamp, violation_type, image FROM violations ORDER BY id DESC")
-            rows = c.fetchall()
-            conn.close()
-            
-            if not rows:
-                st.info("Henüz kayıtlı ihlal yok.")
-            else:
-                for row in rows:
-                    r_id, r_ts, r_type, r_img = row
-                    with st.container(border=True):
-                        c1, c2 = st.columns([1, 3])
-                        with c1:
-                            try:
-                                image = Image.open(io.BytesIO(r_img))
-                                st.image(image, use_container_width=True)
-                            except:
-                                st.error("Resim açılamadı")
-                        with c2:
-                            st.error(f"🚨 {r_type}")
-                            st.write(f"🕒 {r_ts}")
-                            
-                            # Tekil Silme Butonu
-                            if st.button(f"🗑️ Sil (ID: {r_id})", key=f"del_{r_id}"):
-                                try:
-                                    conn_del = sqlite3.connect(DB_PATH, check_same_thread=False)
-                                    c_del = conn_del.cursor()
-                                    c_del.execute("DELETE FROM violations WHERE id=?", (r_id,))
-                                    conn_del.commit()
-                                    conn_del.close()
-                                    st.success("Kayıt silindi.")
-                                    time.sleep(0.5)
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Silinemedi: {e}")
-        except Exception as e:
-            st.error(f"Veritabanı hatası: {e}")
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, timestamp, violation_type, image FROM violations ORDER BY id DESC")
+        rows = c.fetchall()
+        conn.close()
+        
+        if not rows:
+            st.write("Henüz kayıt yok.")
+        else:
+            for row in rows:
+                r_id, r_ts, r_type, r_img = row
+                with st.container(border=True):
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        try:
+                            st.image(Image.open(io.BytesIO(r_img)), use_container_width=True)
+                        except: st.write("Görüntü yok")
+                    with col2:
+                        st.error(f"{r_type}")
+                        st.write(f"Tarih: {r_ts}")
