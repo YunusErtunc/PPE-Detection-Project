@@ -12,7 +12,7 @@ from PIL import Image
 import io
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="İSG Takip Sistemi", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Ekipman Denetim Sistemi", page_icon="🏗️", layout="wide")
 
 # --- DOSYA YOLLARI ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -156,7 +156,7 @@ st.sidebar.title("Menü")
 page = st.sidebar.radio("Sayfa:", ["Kamera Modu", "Yönetici Paneli"])
 
 if page == "Kamera Modu":
-    st.title("🎥 İSG Denetim Kamerası")
+    st.title("🎥 Ekipman Denetim Kamerası")
     st.info("Eldiven, Baret ve Yelek kontrolü aktiftir.")
     
     rtc_configuration = RTCConfiguration(
