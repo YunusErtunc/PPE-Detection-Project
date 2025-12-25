@@ -42,6 +42,7 @@ def load_models():
         st.error(f"Model bulunamadı: {MODEL_BARET_PATH}")
         return None, None
     model_baret = YOLO(MODEL_BARET_PATH)
+    # Bot modeli opsiyonel, varsa yükle
     model_bot = YOLO(MODEL_BOT_PATH) if os.path.exists(MODEL_BOT_PATH) else None
     return model_baret, model_bot
 
@@ -81,7 +82,7 @@ class VideoProcessor(VideoProcessorBase):
                     cls = int(box.cls[0])
                     label = r.names[cls] if r.names and cls in r.names else "Unknown"
                     
-                    # Eğer "NO-" ile başlıyorsa ihlaldir
+                    # Eğer "NO-" ile başlıyorsa veya özel etiketler varsa ihlaldir
                     if label.startswith("NO-") or "Maks_Takmiyor" in label:
                         violation_detected_in_frame = True
                         detected_label = label
@@ -170,7 +171,7 @@ if mod == "🎥 Saha Kamerası":
         async_processing=True,
     )
 
-# --- MOD 2: ŞEF PANELİ (GÜNCELLENEN KISIM) ---
+# --- MOD 2: ŞEF PANELİ (ADMIN) ---
 elif mod == "👷 Şef Paneli (Admin)":
     st.title("👷 Şef Denetim Paneli")
     st.write("Sahadan gelen ihlal bildirimleri aşağıda listelenir.")
@@ -183,47 +184,60 @@ elif mod == "👷 Şef Paneli (Admin)":
             st.rerun()
             
     with col_delete_all:
-        # Kırmızı renkli, dikkat çekici silme butonu
-        if st.button("🗑️ TÜM KAYITLARI TEMİZLE", type="primary"):
-            c = conn.cursor()
-            c.execute("DELETE FROM violations") # Tabloyu boşaltır
-            conn.commit()
-            st.success("Tüm veritabanı temizlendi!")
-            time.sleep(1) # Kullanıcının mesajı görmesi için bekle
-            st.rerun()
+        # --- GÜNCELLENEN KISIM: FABRİKA AYARLARINA DÖNME ---
+        if st.button("🗑️ TÜM KAYITLARI TEMİZLE (FABRİKA AYARLARI)", type="primary"):
+            try:
+                c = conn.cursor()
+                # 1. Tabloyu tamamen sil (DROP)
+                c.execute("DROP TABLE IF EXISTS violations")
+                conn.commit()
+                
+                # 2. Tabloyu sıfırdan tekrar oluştur (ID'ler 1'e döner)
+                init_db()
+                
+                st.success("Veritabanı ve fotoğraflar tamamen sıfırlandı! ID'ler 1'den başlayacak.")
+                time.sleep(1.5) # Mesajın okunması için bekle
+                st.rerun()
+            except Exception as e:
+                st.error(f"Sıfırlama sırasında hata oluştu: {e}")
 
     # Verileri Çek (ID ile birlikte)
-    c = conn.cursor()
-    c.execute("SELECT id, timestamp, violation_type, image FROM violations ORDER BY id DESC")
-    rows = c.fetchall()
+    # Hata önleyici: Eğer tablo silindiyse ve henüz oluşmadıysa hata vermemesi için try-except
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, timestamp, violation_type, image FROM violations ORDER BY id DESC")
+        rows = c.fetchall()
 
-    if not rows:
-        st.info("Henüz bir ihlal kaydı yok. Saha güvenli görünüyor! ✅")
-    else:
-        for row in rows:
-            record_id, ts, v_type, img_data = row
-            
-            # Her kayıt için bir kutu (container) oluştur
-            with st.container(border=True): 
-                col1, col2 = st.columns([1, 3])
+        if not rows:
+            st.info("Henüz bir ihlal kaydı yok. Saha güvenli görünüyor! ✅")
+        else:
+            for row in rows:
+                record_id, ts, v_type, img_data = row
                 
-                with col1:
-                    # Resmi Göster
-                    try:
-                        image = Image.open(io.BytesIO(img_data))
-                        st.image(image, caption="Kanıt Fotoğrafı", use_container_width=True)
-                    except:
-                        st.error("Resim yüklenemedi")
-                
-                with col2:
-                    st.error(f"🚨 İHLAL TESPİT EDİLDİ: {v_type}")
-                    st.write(f"🕒 **Zaman:** {ts}")
+                # Her kayıt için bir kutu (container) oluştur
+                with st.container(border=True): 
+                    col1, col2 = st.columns([1, 3])
                     
-                    # Tekil Silme Butonu
-                    # key=... kısmı çok önemli, her butona özel kimlik verir
-                    if st.button(f"🗑️ Bu Kaydı Sil", key=f"del_{record_id}"):
-                        c.execute("DELETE FROM violations WHERE id=?", (record_id,))
-                        conn.commit()
-                        st.warning("Kayıt silindi.")
-                        time.sleep(0.5)
-                        st.rerun()
+                    with col1:
+                        # Resmi Göster
+                        try:
+                            image = Image.open(io.BytesIO(img_data))
+                            st.image(image, caption=f"ID: {record_id}", use_container_width=True)
+                        except:
+                            st.error("Resim yüklenemedi")
+                    
+                    with col2:
+                        st.error(f"🚨 İHLAL TESPİT EDİLDİ: {v_type}")
+                        st.write(f"🕒 **Zaman:** {ts}")
+                        st.write(f"🆔 **Kayıt No:** {record_id}")
+                        
+                        # Tekil Silme Butonu
+                        if st.button(f"🗑️ Bu Kaydı Sil", key=f"del_{record_id}"):
+                            c.execute("DELETE FROM violations WHERE id=?", (record_id,))
+                            conn.commit()
+                            st.warning("Kayıt silindi.")
+                            time.sleep(0.5)
+                            st.rerun()
+    except sqlite3.OperationalError:
+        # Tablo yoksa (ilk açılışta veya silme sonrası anlık durum)
+        st.info("Veritabanı hazırlanıyor...")
