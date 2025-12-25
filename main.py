@@ -157,7 +157,7 @@ page = st.sidebar.radio("Sayfa:", ["Kamera Modu", "Yönetici Paneli"])
 
 if page == "Kamera Modu":
     st.title("🎥 Ekipman Denetim Kamerası")
-    st.info(" Baret ve Yelek kontrolü aktiftir.")
+    st.info(" Baret,Yelek,Maske ve Ayakkabı kontrolü aktiftir.")
     
     rtc_configuration = RTCConfiguration(
         {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
